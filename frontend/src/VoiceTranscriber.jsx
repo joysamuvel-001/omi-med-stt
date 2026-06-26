@@ -1,3 +1,10 @@
+/**
+ * VoiceTranscriber.jsx  v3
+ * -------------------------
+ * Fix: Each recording blob gets a session index.
+ * Turns are sorted within each session, but sessions appear in recording order.
+ * So: Session 1 turns (sorted by start) → Session 2 turns (sorted by start) → ...
+ */
 
 import { useState, useCallback, useRef } from "react";
 import { useRecorder }                    from "./hooks/useRecorder";
@@ -7,12 +14,15 @@ import { ChatWindow }                     from "./components/Chat/ChatWindow";
 import "./styles/global.css";
 
 export default function VoiceTranscriber() {
-  const [conversation,    setConversation]    = useState([]);
-  const [processing,      setProcessing]      = useState(false);
-  const [error,           setError]           = useState(null);
-  const [enrolledSpeakers, setEnrolledSpeakers] = useState([]);  // list of enrolled names
-  const [enrollStatus,    setEnrollStatus]    = useState(null);  // feedback msg
-  const prevLengthRef = useRef(0);
+  // conversation is now: Array of session groups
+  // Each group: { sessionIdx: number, turns: Turn[] }
+  const [sessions,         setSessions]         = useState([]);   // [{sessionIdx, turns}]
+  const [processing,       setProcessing]        = useState(false);
+  const [error,            setError]             = useState(null);
+  const [enrolledSpeakers, setEnrolledSpeakers]  = useState([]);
+  const [enrollStatus,     setEnrollStatus]       = useState(null);
+  const sessionCountRef = useRef(0);
+  const prevSessionsRef = useRef([]);
 
   // ── Transcription ──────────────────────────────────────────────────────────
   const handleBlob = useCallback(async (blob) => {
@@ -23,12 +33,16 @@ export default function VoiceTranscriber() {
       if (!data.conversation?.length) {
         setError("No speech detected. Speak clearly and try again.");
       } else {
-        // In handleBlob, replace the setConversation call:
-        setConversation((prev) => {
-          prevLengthRef.current = prev.length;
-          const merged = [...prev, ...data.conversation];
-          // Sort by start time so turns always appear chronologically
-          return merged.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+        const sessionIdx = sessionCountRef.current++;
+
+        // Sort turns within this session by start time
+        const sortedTurns = [...data.conversation].sort(
+          (a, b) => (a.start ?? 0) - (b.start ?? 0)
+        );
+
+        setSessions((prev) => {
+          prevSessionsRef.current = prev;
+          return [...prev, { sessionIdx, turns: sortedTurns }];
         });
       }
     } catch (err) {
@@ -46,13 +60,15 @@ export default function VoiceTranscriber() {
   };
 
   const handleRetryVoice = () => {
-    setConversation((prev) => prev.slice(0, prevLengthRef.current));
+    // Remove last session
+    setSessions((prev) => prev.slice(0, -1));
+    sessionCountRef.current = Math.max(0, sessionCountRef.current - 1);
     setError(null);
   };
 
   const handleNewSession = () => {
-    setConversation([]);
-    prevLengthRef.current = 0;
+    setSessions([]);
+    sessionCountRef.current = 0;
     setError(null);
   };
 
@@ -71,9 +87,10 @@ export default function VoiceTranscriber() {
     }
   }, []);
 
-  // ── Stats from real speaker names ─────────────────────────────────────────
-  // Count unique speakers who actually spoke (not Unknown)
-  const speakerCounts = conversation.reduce((acc, turn) => {
+  // ── Flatten for stats ──────────────────────────────────────────────────────
+  const allTurns = sessions.flatMap((s) => s.turns);
+  const turnCount = allTurns.length;
+  const speakerCounts = allTurns.reduce((acc, turn) => {
     const name = turn.speaker || "Unknown";
     acc[name] = (acc[name] || 0) + 1;
     return acc;
@@ -89,15 +106,15 @@ export default function VoiceTranscriber() {
         onStop={stop}
         onRetryVoice={handleRetryVoice}
         onNewSession={handleNewSession}
-        hasConversation={conversation.length > 0}
-        turnCount={conversation.length}
-        speakerCounts={speakerCounts}          // { "Dr. Priya": 4, "Raju": 3 }
-        enrolledSpeakers={enrolledSpeakers}    // ["Dr. Priya", "Raju"]
+        hasConversation={sessions.length > 0}
+        turnCount={turnCount}
+        speakerCounts={speakerCounts}
+        enrolledSpeakers={enrolledSpeakers}
         enrollStatus={enrollStatus}
         onEnroll={handleEnroll}
       />
       <ChatWindow
-        conversation={conversation}
+        sessions={sessions}           // pass sessions, not flat conversation
         processing={processing}
         error={error}
       />

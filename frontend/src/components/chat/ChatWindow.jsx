@@ -1,8 +1,12 @@
-
+/**
+ * ChatWindow.jsx  v4
+ * -------------------
+ * Accepts `sessions` (array of {sessionIdx, turns[]}) instead of flat conversation.
+ * Sessions render in recording order. Turns within each session are pre-sorted by start time.
+ * A subtle divider separates each recording session.
+ */
 
 import styles from "./ChatMessage.module.css";
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 const PALETTE = [
   "#60a5fa", "#34d399", "#f472b6", "#a78bfa",
@@ -54,17 +58,63 @@ function confidenceBadge(turn) {
   };
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+function TurnCard({ turn }) {
+  const name    = displayName(turn.speaker);
+  const color   = getSpeakerColor(turn.speaker);
+  const badge   = confidenceBadge(turn);
+  const unknown = isRawLabel(turn.speaker);
 
-export function ChatWindow({ conversation, processing, error }) {
-  // Sort by start time — fixes out-of-order turns
-  const sorted = [...conversation].sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+  return (
+    <div className={`${styles.turn} ${unknown ? styles.turnUnknown : ""}`}>
+      <div
+        className={styles.avatar}
+        style={{
+          background:  unknown ? "#1e293b" : color + "22",
+          color,
+          borderColor: color + "44",
+        }}
+      >
+        {initials(turn.speaker)}
+      </div>
+
+      <div className={styles.bubble}>
+        <div className={styles.meta}>
+          <span className={styles.speakerName} style={{ color: unknown ? "#64748b" : color }}>
+            {name}
+          </span>
+
+          {turn.similarity != null && (
+            <span className={styles.badge} style={{ background: badge.bg, color: badge.color }}>
+              {badge.label}
+            </span>
+          )}
+
+          {turn.start != null && (
+            <span className={styles.timestamp}>
+              {formatTime(turn.start)} – {formatTime(turn.end)}
+            </span>
+          )}
+        </div>
+
+        <p className={`${styles.text} ${unknown ? styles.textUnknown : ""}`}>
+          {turn.text}
+        </p>
+
+        {turn.diarized_as && !isRawLabel(turn.speaker) && (
+          <p className={styles.diarizedAs}>via {turn.diarized_as}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function ChatWindow({ sessions = [], processing, error }) {
+  const hasContent = sessions.some((s) => s.turns.length > 0);
 
   return (
     <main className={styles.chatWindow}>
 
-      {/* ── Empty state ── */}
-      {!sorted.length && !processing && !error && (
+      {!hasContent && !processing && !error && (
         <div className={styles.empty}>
           <div className={styles.emptyIcon}>🎙️</div>
           <p className={styles.emptyTitle}>Ready to transcribe</p>
@@ -74,72 +124,25 @@ export function ChatWindow({ conversation, processing, error }) {
         </div>
       )}
 
-      {/* ── Turns ── */}
       <div className={styles.feed}>
-        {sorted.map((turn, i) => {
-          const name  = displayName(turn.speaker);
-          const color = getSpeakerColor(turn.speaker);
-          const badge = confidenceBadge(turn);
-          const unknown = isRawLabel(turn.speaker);
+        {sessions.map((session, sIdx) => (
+          <div key={session.sessionIdx} className={styles.sessionGroup}>
 
-          return (
-            <div key={i} className={`${styles.turn} ${unknown ? styles.turnUnknown : ""}`}>
-
-              {/* Avatar */}
-              <div
-                className={styles.avatar}
-                style={{ background: unknown ? "#1e293b" : color + "22", color, borderColor: color + "44" }}
-              >
-                {initials(turn.speaker)}
+            {sIdx > 0 && (
+              <div className={styles.sessionDivider}>
+                <span className={styles.sessionDividerLine} />
+                <span className={styles.sessionDividerLabel}>Recording {sIdx + 1}</span>
+                <span className={styles.sessionDividerLine} />
               </div>
+            )}
 
-              {/* Bubble */}
-              <div className={styles.bubble}>
-                <div className={styles.meta}>
-                  {/* Name */}
-                  <span
-                    className={styles.speakerName}
-                    style={{ color: unknown ? "#64748b" : color }}
-                  >
-                    {name}
-                  </span>
-
-                  {/* Confidence badge */}
-                  {turn.similarity != null && (
-                    <span
-                      className={styles.badge}
-                      style={{ background: badge.bg, color: badge.color }}
-                    >
-                      {badge.label}
-                    </span>
-                  )}
-
-                  {/* Timestamp — right-aligned */}
-                  {turn.start != null && (
-                    <span className={styles.timestamp}>
-                      {formatTime(turn.start)} – {formatTime(turn.end)}
-                    </span>
-                  )}
-                </div>
-
-                {/* Transcript */}
-                <p className={`${styles.text} ${unknown ? styles.textUnknown : ""}`}>
-                  {turn.text}
-                </p>
-
-                {/* Diarized-as — only show if different from displayed name */}
-                {turn.diarized_as && !isRawLabel(turn.speaker) && (
-                  <p className={styles.diarizedAs}>
-                    via {turn.diarized_as}
-                  </p>
-                )}
-              </div>
-            </div>
-          );
-        })}
+            {session.turns.map((turn, tIdx) => (
+              <TurnCard key={tIdx} turn={turn} />
+            ))}
+          </div>
+        ))}
       </div>
 
-      {/* ── Processing indicator ── */}
       {processing && (
         <div className={styles.spinnerRow}>
           <div className={styles.spinner} />
@@ -147,7 +150,6 @@ export function ChatWindow({ conversation, processing, error }) {
         </div>
       )}
 
-      {/* ── Error ── */}
       {error && (
         <div className={styles.error}>
           <span className={styles.errorIcon}>⚠</span>
