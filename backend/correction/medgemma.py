@@ -1,20 +1,3 @@
-"""
-correction/medgemma.py
------------------------
-Single-pass medical ASR correction using MedGemma 4B.
-
-Uses the BASE medgemma-4b-it model, not medgemma-1.5-4b-it — the 1.5
-version has a "thinking trace" behavior that, combined with the
-"think silently if needed" system instruction (which Google's own docs
-say ACTIVATES extended reasoning, not suppresses it), produces long
-internal reasoning text instead of a clean corrected line. The base
-4b-it model does not have this behavior, and this code does not use
-that instruction at all.
-
-Requires:
-    pip install transformers>=4.50.0 accelerate
-    License already accepted for google/medgemma-4b-it (confirmed earlier).
-"""
 
 import os
 import re
