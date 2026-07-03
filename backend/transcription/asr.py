@@ -1,14 +1,3 @@
-"""
-transcription/asr.py
----------------------
-Loads the Nemotron ASR model once at import time and exposes
-transcribe_segments() for per-turn inference. Long segments are
-split into smaller chunks before transcription to avoid RNNT
-error compounding on long single utterances.
-
-Environment overrides:
-    LOCAL_MODEL_PATH   — path to a local .nemo checkpoint (ASR)
-"""
 
 import os
 from typing import List, Tuple
@@ -86,6 +75,33 @@ def _split_long_segment(seg: dict, max_duration: float = MAX_CHUNK_SECONDS):
     return chunks
 
 
+def _merge_chunk_texts(chunks_text: list) -> str:
+    """
+    Join per-chunk transcripts while removing word-level duplication caused
+    by CHUNK_OVERLAP_SECONDS — the overlapping audio region gets transcribed
+    by both adjacent chunks, so we trim the repeated words at the seam
+    instead of naively concatenating (which produces stutters like
+    "once daily. once daily.").
+    """
+    if not chunks_text:
+        return ""
+
+    merged_words = chunks_text[0].split()
+    for nxt_text in chunks_text[1:]:
+        nxt_words = nxt_text.split()
+        max_check = min(len(merged_words), len(nxt_words), 8)  # overlap is short, no need to check far
+        best_k = 0
+        for k in range(max_check, 0, -1):
+            tail = [w.lower().strip(".,!?") for w in merged_words[-k:]]
+            head = [w.lower().strip(".,!?") for w in nxt_words[:k]]
+            if tail == head:
+                best_k = k
+                break
+        merged_words.extend(nxt_words[best_k:])
+
+    return " ".join(merged_words)
+
+
 def transcribe_segments(
     wav_path: str,
     labeled_segments: List[Segment],
@@ -133,7 +149,8 @@ def transcribe_segments(
 
     conversation: List[dict] = []
     for i, seg in enumerate(labeled_segments):
-        full_text = " ".join(t for t in texts_by_segment.get(i, []) if t).strip()
+        chunk_texts = [t for t in texts_by_segment.get(i, []) if t]
+        full_text = _merge_chunk_texts(chunk_texts).strip()
         if not full_text:
             continue
         conversation.append({

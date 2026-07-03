@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from correction.medgemma import correct_medical_terms
+from correction.medgemma import correct_transcript
 from audio_utils.converter import convert_to_wav
 from diarization.model import run_diarization
 from diarization.speaker import process_diarization
@@ -84,7 +84,11 @@ async def transcribe(audio: UploadFile = File(...)):
         print(f"[server] {len(labeled_segments)} segments after identity merge")
 
         conversation = transcribe_segments(wav_path, labeled_segments, tmp_dir)
-        conversation = correct_medical_terms(conversation)
+        print(f"[server] Sending {len(conversation)} turns to MedGemma (single request)")
+        conversation = correct_transcript(conversation)["corrected_conversation"]
+        print(f"[server] MedGemma correction complete — {len(conversation)} turns returned")
+
+        full_text = " ".join(t["text"] for t in conversation)
         full_text    = " ".join(t["text"] for t in conversation)
 
         return {"text": full_text, "conversation": conversation}
@@ -100,10 +104,11 @@ async def transcribe(audio: UploadFile = File(...)):
 @app.get("/api/health")
 async def health():
     return {
-        "status":   "ok",
-        "gpu":      torch.cuda.is_available(),
-        "device":   "cuda" if torch.cuda.is_available() else "cpu",
-        "speakers": list_enrolled(),
+        "status":      "ok",
+        "gpu":         torch.cuda.is_available(),
+        "device":      "cuda" if torch.cuda.is_available() else "cpu",
+        "speakers":    list_enrolled(),
+        "correction":  bool(os.environ.get("HF_API_TOKEN", "")),
     }
 
 
