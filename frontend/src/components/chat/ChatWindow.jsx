@@ -19,12 +19,21 @@ function isRawLabel(name) {
   return !name || name === "Unknown" || /^[Ss]peaker_?\d+$/i.test(name);
 }
 
+function isMissing(name) {
+  return !name || name === "Unknown";
+}
+
+// Always show the real speaker label from the backend/RunPod JSON.
+// "SPEAKER_00" is prettified to "Speaker 1"; enrolled names and labels
+// like "Doctor"/"Patient" pass through unchanged.
 function displayName(name) {
-  return isRawLabel(name) ? "Unknown" : name;
+  if (isMissing(name)) return "Unknown";
+  const m = name.match(/^[Ss]peaker[_\s]?(\d+)$/i);
+  return m ? `Speaker ${parseInt(m[1], 10) + 1}` : name;
 }
 
 function getSpeakerColor(name) {
-  if (isRawLabel(name)) return "#64748b";
+  if (isMissing(name)) return "#64748b";
   if (!colorCache[name]) {
     colorCache[name] = PALETTE[colorIdx % PALETTE.length];
     colorIdx++;
@@ -33,7 +42,9 @@ function getSpeakerColor(name) {
 }
 
 function initials(name) {
-  if (isRawLabel(name)) return "?";
+  if (isMissing(name)) return "?";
+  const m = name.match(/^[Ss]peaker[_\s]?(\d+)$/i);
+  if (m) return `S${parseInt(m[1], 10) + 1}`;
   return name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 }
 
@@ -62,7 +73,7 @@ function TurnCard({ turn }) {
   const name    = displayName(turn.speaker);
   const color   = getSpeakerColor(turn.speaker);
   const badge   = confidenceBadge(turn);
-  const unknown = isRawLabel(turn.speaker);
+  const unknown = isMissing(turn.speaker);
 
   return (
     <div className={`${styles.turn} ${unknown ? styles.turnUnknown : ""}`}>

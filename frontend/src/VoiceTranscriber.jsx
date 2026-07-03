@@ -10,7 +10,7 @@ import { useState, useCallback, useRef } from "react";
 import { useRecorder }                    from "./hooks/useRecorder";
 import { transcribeAudio, enrollSpeaker } from "./services/transcribeApi";
 import { Sidebar }                        from "./components/Sidebar/Sidebar";
-import { ChatWindow }                     from "./components/Chat/ChatWindow";
+import { ChatWindow }                     from "./components/chat/ChatWindow";
 import "./styles/global.css";
 
 export default function VoiceTranscriber() {

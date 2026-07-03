@@ -1,11 +1,20 @@
 
 
 import os
+import re
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from identification.titanet import get_embedding
 
 ENROLLED_DIR = os.path.join(os.path.dirname(__file__), "..", "enrolled_speakers")
+
+
+def _safe_name(name: str) -> str:
+    """Keep only filename-safe characters so a name can't escape ENROLLED_DIR."""
+    clean = re.sub(r"[^\w\- ]", "", name or "").strip()
+    if not clean:
+        raise ValueError(f"Invalid speaker name: {name!r}")
+    return clean
 
 # Lower = more lenient matches. Start at 0.65, raise to 0.72 once you
 # have 3+ enrollment samples per person for best accuracy.
@@ -13,6 +22,7 @@ THRESHOLD = 0.65
 
 
 def enroll_speaker(name: str, wav_path: str) -> dict:
+    name = _safe_name(name)
     os.makedirs(ENROLLED_DIR, exist_ok=True)
     new_emb = get_embedding(wav_path)
     save_path  = os.path.join(ENROLLED_DIR, f"{name}.npy")
@@ -40,10 +50,12 @@ def enroll_speaker(name: str, wav_path: str) -> dict:
 def identify_speaker(wav_path: str, fallback_label: str = "Unknown") -> dict:
     enrolled = _load_all_enrolled()
 
-    # No enrolled speakers at all → always Unknown
+    # No enrolled speakers → keep the diarization label (SPEAKER_xx) so
+    # different unidentified people never collapse into one "Unknown"
+    # and get wrongly merged by merge_by_identity.
     if not enrolled:
         return {
-            "name": "Unknown",
+            "name": fallback_label,
             "score": 0.0,
             "reason": "no enrolled speakers"
         }
@@ -52,7 +64,7 @@ def identify_speaker(wav_path: str, fallback_label: str = "Unknown") -> dict:
         query_emb = get_embedding(wav_path)
     except Exception as e:
         print(f"[registry] Embedding failed: {e}")
-        return {"name": "Unknown", "score": 0.0, "reason": str(e)}
+        return {"name": fallback_label, "score": 0.0, "reason": str(e)}
 
     query_emb  = query_emb.reshape(1, -1)
     best_name  = fallback_label   # SPEAKER_xx — keeps turn separation
@@ -67,7 +79,7 @@ def identify_speaker(wav_path: str, fallback_label: str = "Unknown") -> dict:
     if best_score < THRESHOLD:
         print(f"[registry] best match: {best_name} (score={best_score:.3f}, threshold={THRESHOLD})")
         return {
-            "name":   "Unknown",        # ← Unknown when enrolled exist but no match
+            "name":   fallback_label,   # keep SPEAKER_xx — preserves turn separation
             "score":  round(best_score, 3),
             "reason": "below threshold"
         }
@@ -81,6 +93,7 @@ def list_enrolled() -> list:
 
 
 def delete_speaker(name: str) -> dict:
+    name = _safe_name(name)
     path = os.path.join(ENROLLED_DIR, f"{name}.npy")
     if os.path.exists(path):
         os.remove(path)

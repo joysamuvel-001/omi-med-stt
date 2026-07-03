@@ -10,8 +10,12 @@ def process_diarization(raw_segments: list) -> list:
             parts = seg.strip().split()
             if len(parts) < 3:
                 continue
-            start = float(parts[0])
-            end   = float(parts[1])
+            try:
+                start = float(parts[0])
+                end   = float(parts[1])
+            except ValueError:
+                print(f"[diarization] skipping malformed segment: {seg!r}")
+                continue
             label = parts[2]
         elif isinstance(seg, (tuple, list)):
             print(f"[diarization] DEBUG raw tuple/list segment: {seg!r}")

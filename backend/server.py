@@ -84,14 +84,28 @@ async def transcribe(audio: UploadFile = File(...)):
         print(f"[server] {len(labeled_segments)} segments after identity merge")
 
         conversation = transcribe_segments(wav_path, labeled_segments, tmp_dir)
-        print(f"[server] Sending {len(conversation)} turns to MedGemma (single request)")
-        conversation = correct_transcript(conversation)["corrected_conversation"]
-        print(f"[server] MedGemma correction complete — {len(conversation)} turns returned")
+
+        # Correction is best-effort: a RunPod failure must never lose a
+        # transcript that diarization + ASR already produced.
+        correction_applied = False
+        if conversation:
+            print(f"[server] Sending {len(conversation)} turns to MedGemma (single request)")
+            try:
+                conversation = correct_transcript(conversation)["corrected_conversation"]
+                correction_applied = True
+                print(f"[server] MedGemma correction complete — {len(conversation)} turns returned")
+            except Exception as corr_exc:
+                print(f"[server] MedGemma correction failed ({corr_exc}) — returning uncorrected transcript")
+        else:
+            print("[server] No speech detected — skipping MedGemma correction")
 
         full_text = " ".join(t["text"] for t in conversation)
-        full_text    = " ".join(t["text"] for t in conversation)
 
-        return {"text": full_text, "conversation": conversation}
+        return {
+            "text":               full_text,
+            "conversation":       conversation,
+            "correction_applied": correction_applied,
+        }
 
     except Exception as exc:
         import traceback
