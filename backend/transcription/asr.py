@@ -12,8 +12,8 @@ import nemo.collections.asr as nemo_asr
 # Config
 # ---------------------------------------------------------------------------
 
-MODEL_NAME = "nvidia/nemotron-speech-streaming-en-0.6b"
-DEFAULT_LOCAL_PATH = "./model_cache/nemotron-speech-streaming-en-0.6b.nemo"
+MODEL_NAME = "omi-health/omi-med-stt-v1"
+DEFAULT_LOCAL_PATH = "./model_cache/omi-med-stt-v1.nemo"
 LOCAL_MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH") or DEFAULT_LOCAL_PATH
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -40,11 +40,6 @@ else:
 # Widen attention context for best accuracy this model supports.
 # [70, 13] is the highest-context option among this checkpoint's
 # trained look-aheads (confirmed via NeMo's own supported-list warning).
-try:
-    _asr_model.encoder.set_default_att_context_size([70, 13])
-    print("[asr] att_context_size set to [70, 13]")
-except AttributeError:
-    print("[asr] encoder has no att_context_size — skipping context widen")
 
 
 # ---------------------------------------------------------------------------
