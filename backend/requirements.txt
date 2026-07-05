@@ -1,40 +1,44 @@
-# ============================================================
-# MedTranscribe — Python Dependencies
-# Python 3.10  |  conda env: nemotron310
-# ============================================================
+# ── MedTranscribe Backend Requirements ────────────────────────────────────────
+# Install order matters. Always install torch first separately:
+#
+#   pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+#       --index-url https://download.pytorch.org/whl/cu124
+#
+# Then install this file:
+#   pip install -r requirements.txt
+#
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Web Framework ────────────────────────────────────────────
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-python-multipart==0.0.9          # required for File/Form uploads
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
 
-# ── Audio I/O ────────────────────────────────────────────────
+# ── Audio processing ──────────────────────────────────────────────────────────
 soundfile==0.12.1
-scipy==1.13.0
-av==12.1.0                       # PyAV — WebM/Opus → WAV (bundles its own ffmpeg)
+scipy==1.13.1
+ffmpeg-python==0.2.0
 
-# ── NVIDIA NeMo ──────────────────────────────────────────────
-# Installs NeMo ASR + TitaNet + Sortformer
-nemo_toolkit[asr]==1.23.0
+# ── NeMo ASR (Omi Med STT + TitaNet) ─────────────────────────────────────────
+# Install nemo_toolkit after torch to avoid torch version clobber
+nemo_toolkit[asr]==2.2.0
 
-# ── PyTorch (CPU fallback — GPU users see note below) ────────
-torch==2.2.2
-torchaudio==2.2.2
+# ── Speaker diarization ───────────────────────────────────────────────────────
+pyannote.audio==3.3.2
+speechbrain==1.0.0
 
-# ── ML Utilities ─────────────────────────────────────────────
+# ── Speaker identification ────────────────────────────────────────────────────
+scikit-learn==1.5.2
 numpy==1.26.4
-scikit-learn==1.4.2              # cosine similarity in registry.py
 
-# ── Misc ─────────────────────────────────────────────────────
-huggingface-hub==0.23.2          # model downloads from HuggingFace
-omegaconf==2.3.0                 # NeMo config system
-hydra-core==1.3.2
+# ── HuggingFace ───────────────────────────────────────────────────────────────
+huggingface_hub==0.24.7
+transformers==4.44.2
+accelerate==0.34.2
 
-# ============================================================
-# GPU NOTE (CUDA 12.1):
-# Replace the torch lines above with:
-#
-#   pip install torch==2.2.2 torchaudio==2.2.2 \
-#       --index-url https://download.pytorch.org/whl/cu121
-#
-# ============================================================
+# ── LLM correction API ────────────────────────────────────────────────────────
+httpx==0.27.2
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+omegaconf==2.3.0

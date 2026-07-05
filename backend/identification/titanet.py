@@ -1,52 +1,87 @@
+"""
+identification/titanet.py
+--------------------------
+TitaNet Large speaker embedding extractor.
+Forces deterministic CPU inference so stored embeddings
+match across server restarts.
+"""
 
 import numpy as np
 import torch
 import soundfile as sf
 
-_model = None  # singleton
+_model = None
 
 
 def _load_model():
     global _model
-    if _model is None:
-        print("[titanet] Loading TitaNet Large...")
-        import nemo.collections.asr as nemo_asr
-        _model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-            "nvidia/speakerverification_en_titanet_large"
-        )
-        _model.eval()
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        _model = _model.to(device)
-        print(f"[titanet] Loaded on {device}")
+    if _model is not None:
+        return _model
+
+    # Force deterministic behavior — critical so embeddings are
+    # consistent across server restarts on CPU
+    torch.manual_seed(42)
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+
+    print("[titanet] Loading TitaNet Large...")
+    import nemo.collections.asr as nemo_asr
+
+    _model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
+        "nvidia/speakerverification_en_titanet_large"
+    )
+    _model.eval()
+
+    # Keep on CPU — consistent with rest of pipeline
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    _model = _model.to(device)
+    print(f"[titanet] Loaded on {device}")
     return _model
 
 
 def get_embedding(wav_path: str) -> np.ndarray:
     """
-    Extract a 192-dim TitaNet speaker embedding from a 16kHz mono WAV file.
-    Returns a normalized numpy array.
+    Extract a 192-dim L2-normalised TitaNet speaker embedding.
+    Audio must be 16kHz mono WAV.
     """
     model = _load_model()
 
-    # TitaNet expects 16kHz mono — your converter.py already ensures this
     audio, sr = sf.read(wav_path)
-    if sr != 16000:
-        raise ValueError(f"Expected 16kHz audio, got {sr}Hz. Run through converter first.")
 
-    audio_tensor = torch.tensor(audio, dtype=torch.float32).unsqueeze(0)
+    if sr != 16000:
+        raise ValueError(f"Expected 16kHz, got {sr}Hz")
+
+    # Ensure float32 mono
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    audio = audio.astype(np.float32)
+
+    # Minimum length guard — TitaNet needs at least 0.5s
+    min_samples = int(0.5 * sr)
+    if len(audio) < min_samples:
+        audio = np.pad(audio, (0, min_samples - len(audio)))
+
+    audio_tensor  = torch.tensor(audio, dtype=torch.float32).unsqueeze(0)
     length_tensor = torch.tensor([audio_tensor.shape[1]], dtype=torch.long)
 
     device = next(model.parameters()).device
-    audio_tensor = audio_tensor.to(device)
+    audio_tensor  = audio_tensor.to(device)
     length_tensor = length_tensor.to(device)
 
-    with torch.no_grad():
+    # Deterministic inference — no dropout, no randomness
+    with torch.inference_mode():
+        torch.manual_seed(42)
         _, emb = model.forward(
             input_signal=audio_tensor,
-            input_signal_length=length_tensor
+            input_signal_length=length_tensor,
         )
 
-    emb_np = emb.squeeze().cpu().numpy()
-    # L2 normalize for cosine similarity
-    emb_np = emb_np / (np.linalg.norm(emb_np) + 1e-9)
+    emb_np = emb.squeeze().cpu().numpy().astype(np.float64)
+
+    # L2 normalise — makes cosine similarity = dot product
+    norm = np.linalg.norm(emb_np)
+    if norm > 1e-9:
+        emb_np = emb_np / norm
+
     return emb_np

@@ -156,4 +156,5 @@ def transcribe_segments(
             "start":       round(seg["start"], 2),
             "end":         round(seg["end"], 2),
         })
+
     return conversation
