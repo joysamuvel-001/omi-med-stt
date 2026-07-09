@@ -15,7 +15,7 @@ from identification.titanet import get_embedding
 from identification.titanet import get_embedding_windowed as get_embedding
 
 ENROLLED_DIR = os.path.join(os.path.dirname(__file__), "..", "enrolled_speakers")
-THRESHOLD    = 0.65
+THRESHOLD    = 0.55
 
 
 def _safe_name(name: str) -> str:

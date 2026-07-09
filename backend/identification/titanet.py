@@ -53,12 +53,10 @@ def get_embedding(wav_path: str) -> np.ndarray:
     if sr != 16000:
         raise ValueError(f"Expected 16kHz, got {sr}Hz")
 
-    # Ensure float32 mono
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     audio = audio.astype(np.float32)
 
-    # Minimum length guard — TitaNet needs at least 0.5s
     min_samples = int(0.5 * sr)
     if len(audio) < min_samples:
         audio = np.pad(audio, (0, min_samples - len(audio)))
@@ -69,6 +67,31 @@ def get_embedding(wav_path: str) -> np.ndarray:
     device = next(model.parameters()).device
     audio_tensor  = audio_tensor.to(device)
     length_tensor = length_tensor.to(device)
+
+    with torch.inference_mode():
+        torch.manual_seed(42)
+        out1, out2 = model.forward(
+            input_signal=audio_tensor,
+            input_signal_length=length_tensor,
+        )
+
+
+    if out1.shape[-1] == 192:
+        emb = out1
+    elif out2.shape[-1] == 192:
+        emb = out2
+    else:
+        raise RuntimeError(
+            f"Neither model output is 192-dim — got {tuple(out1.shape)} and {tuple(out2.shape)}."
+        )
+
+    emb_np = emb.squeeze().cpu().numpy().astype(np.float64)
+
+    norm = np.linalg.norm(emb_np)
+    if norm > 1e-9:
+        emb_np = emb_np / norm
+
+    return emb_np
 
     # Deterministic inference — no dropout, no randomness
     with torch.inference_mode():
