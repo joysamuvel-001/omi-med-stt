@@ -12,7 +12,7 @@ from correction.medgemma import correct_transcript
 from audio_utils.converter import convert_to_wav
 from diarization.model import run_diarization
 from diarization.speaker import process_diarization
-from identification.titanet import get_embedding_windowed  # add this import
+from identification.titanet import get_embedding_windowed 
 from transcription.asr import transcribe_segments
 from identification.registry import (
     enroll_speaker, identify_speaker,
@@ -171,6 +171,20 @@ def _identify_segments(wav_path: str, segments: list, tmp_dir: str) -> list:
     return segments
 
 def _smooth_short_unknowns(segments: list, max_short_duration: float = 2.5, max_gap: float = 2.0) -> list:
+    """
+    Short segments give unreliable TitaNet embeddings on their own.
+    If a short/unidentified segment is sandwiched between two confidently
+    identified turns from the SAME speaker, with small gaps, assume it's
+    that speaker too — neighbor context beats a shaky standalone embedding.
+
+    Guard: only smooth if pyannote's own diarization (diarized_as, e.g.
+    "SPEAKER_00") agrees the segment belongs to the same underlying voice
+    cluster as at least one neighbor. Without this guard, a genuinely
+    different speaker turn that happens to be short gets silently relabeled
+    just because it sits between two turns from someone else — overriding
+    pyannote's own different-voice detection instead of just filling in
+    an uncertain gap.
+    """
     if len(segments) < 2:
         return segments
 
@@ -180,13 +194,14 @@ def _smooth_short_unknowns(segments: list, max_short_duration: float = 2.5, max_
     if not first.get("identified") and duration <= max_short_duration:
         nxt = segments[1]
         gap = nxt["start"] - first["end"]
-        if nxt.get("identified") and gap <= max_gap:
+        diarized_matches_next = first.get("diarized_as") == nxt.get("diarized_as")
+        if diarized_matches_next and nxt.get("identified") and gap <= max_gap:
             print(f"[server] Smoothing first segment '{first['speaker']}' ({duration:.1f}s) -> '{nxt['speaker']}' via next-only")
             first["speaker"]    = nxt["speaker"]
             first["identified"] = True
             first["smoothed"]   = True
 
-    # ── Middle segments (unchanged) ──
+    # ── Middle segments ──
     for i in range(1, len(segments) - 1):
         seg = segments[i]
         duration = seg["end"] - seg["start"]
@@ -194,6 +209,17 @@ def _smooth_short_unknowns(segments: list, max_short_duration: float = 2.5, max_
             continue
 
         prev_seg, next_seg = segments[i - 1], segments[i + 1]
+
+        # Only smooth if pyannote itself thought this was the SAME
+        # underlying speaker cluster as at least one neighbor — don't override
+        # a genuine different-voice detection just because it's short.
+        diarized_matches_neighbor = (
+            seg.get("diarized_as") == prev_seg.get("diarized_as")
+            or seg.get("diarized_as") == next_seg.get("diarized_as")
+        )
+        if not diarized_matches_neighbor:
+            continue
+
         if (prev_seg["speaker"] == next_seg["speaker"]
                 and prev_seg.get("identified") and next_seg.get("identified")):
             gap_before = seg["start"] - prev_seg["end"]
@@ -210,7 +236,8 @@ def _smooth_short_unknowns(segments: list, max_short_duration: float = 2.5, max_
     if not last.get("identified") and duration <= max_short_duration:
         prev = segments[-2]
         gap = last["start"] - prev["end"]
-        if prev.get("identified") and gap <= max_gap:
+        diarized_matches_prev = last.get("diarized_as") == prev.get("diarized_as")
+        if diarized_matches_prev and prev.get("identified") and gap <= max_gap:
             print(f"[server] Smoothing last segment '{last['speaker']}' ({duration:.1f}s) -> '{prev['speaker']}' via prev-only")
             last["speaker"]    = prev["speaker"]
             last["identified"] = True

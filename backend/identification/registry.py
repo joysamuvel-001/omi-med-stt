@@ -11,7 +11,6 @@ import os
 import re
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from identification.titanet import get_embedding
 from identification.titanet import get_embedding_windowed as get_embedding
 
 ENROLLED_DIR = os.path.join(os.path.dirname(__file__), "..", "enrolled_speakers")
@@ -47,56 +46,49 @@ def enroll_speaker(name: str, wav_path: str) -> dict:
     total = idx + 1
     print(f"[registry] Enrolled '{name}' sample {total} → {save_path}")
 
+    MIN_RECOMMENDED_SAMPLES = 3
+
     return {
         "name":            name,
         "status":          "enrolled",
         "sample_count":    total,
         "total_enrolled":  len(list_enrolled()),
+        "needs_more_samples": total < MIN_RECOMMENDED_SAMPLES,
     }
 
 
 def identify_speaker(wav_path: str, fallback_label: str = "Unknown") -> dict:
-    """
-    Score query against EVERY stored embedding for every enrolled speaker.
-    Takes the maximum score per speaker, then picks the best speaker.
-    This way a single good enrollment session from any previous run
-    can still produce a match.
-    """
-    all_embeddings = _load_all_enrolled()   # { name: [emb0, emb1, ...] }
-
+    all_embeddings = _load_all_enrolled()
     if not all_embeddings:
         return {"name": fallback_label, "score": 0.0, "reason": "no enrolled speakers"}
 
     try:
         query_emb = get_embedding(wav_path).reshape(1, -1)
     except Exception as e:
-        print(f"[registry] Embedding failed: {e}")
         return {"name": fallback_label, "score": 0.0, "reason": str(e)}
 
-    best_name  = fallback_label
-    best_score = 0.0
-
+    scores = {}
     for name, emb_list in all_embeddings.items():
-        # Score against all stored embeddings for this speaker
-        for ref_emb in emb_list:
-            score = float(
-                cosine_similarity(query_emb, ref_emb.reshape(1, -1))[0][0]
-            )
-            if score > best_score:
-                best_score = score
-                best_name  = name
+        centroid = np.mean(emb_list, axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm > 1e-9:
+            centroid = centroid / norm
+        scores[name] = float(cosine_similarity(query_emb, centroid.reshape(1, -1))[0][0])
 
-    print(f"[registry] best match: {best_name} (score={best_score:.3f}, threshold={THRESHOLD})")
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    best_name, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else -1.0
+
+    print(f"[registry] scores: {scores} | best={best_name} ({best_score:.3f})")
 
     if best_score < THRESHOLD:
-        return {
-            "name":   fallback_label,
-            "score":  round(best_score, 3),
-            "reason": "below threshold",
-        }
+        return {"name": fallback_label, "score": round(best_score, 3), "reason": "below threshold"}
+
+    # Margin check — if top-2 speakers are too close, it's ambiguous, not a confident match
+    if best_score - second_score < 0.08:
+        return {"name": fallback_label, "score": round(best_score, 3), "reason": "ambiguous — too close to second best"}
 
     return {"name": best_name, "score": round(best_score, 3)}
-
 
 def list_enrolled() -> list:
     """Return unique speaker names (deduplicated across multiple sample files)."""
