@@ -57,5 +57,18 @@ export function useRecorder(onStop) {
     setRecording(false);
   }, []);
 
-  return { recording, elapsed, start, stop };
+  const cancel = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      const mr = mediaRecorderRef.current;
+      mr.onstop = () => {
+        if (mr.stream) {
+          mr.stream.getTracks().forEach((t) => t.stop());
+        }
+      };
+      mr.stop();
+    }
+    setRecording(false);
+  }, []);
+
+  return { recording, elapsed, start, stop, cancel };
 }

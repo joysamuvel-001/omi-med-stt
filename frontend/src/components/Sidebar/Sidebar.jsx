@@ -12,7 +12,7 @@ import styles               from "./Sidebar.module.css";
 
 export function Sidebar({
   recording, elapsed, processing,
-  onStart, onStop, onRetryVoice, onNewSession,
+  onStart, onStop, onCancel, onRetryVoice, onNewSession,
   hasConversation, turnCount,
   speakerCounts,
   enrolledSpeakers,
@@ -145,6 +145,16 @@ export function Sidebar({
           <p className={styles.micLabel}>
             {processing ? "Processing…" : recording ? "Tap to stop" : "Tap to record"}
           </p>
+
+          {recording && (
+            <button
+              className={styles.cancelRecBtn}
+              onClick={onCancel}
+              title="Cancel recording and discard audio"
+            >
+              Cancel
+            </button>
+          )}
         </div>
 
         {processing && (

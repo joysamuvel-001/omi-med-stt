@@ -216,6 +216,27 @@
   letter-spacing: 0.02em;
 }
 
+.cancelRecBtn {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.cancelRecBtn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fff;
+}
+.cancelRecBtn:active {
+  transform: scale(0.97);
+}
+
 /* Processing row */
 .processingRow {
   display: flex;

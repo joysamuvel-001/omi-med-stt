@@ -52,7 +52,7 @@ export default function VoiceTranscriber() {
     }
   }, []);
 
-  const { recording, elapsed, start, stop } = useRecorder(handleBlob);
+  const { recording, elapsed, start, stop, cancel } = useRecorder(handleBlob);
 
   const handleStart = async () => {
     setError(null);
@@ -104,6 +104,7 @@ export default function VoiceTranscriber() {
         processing={processing}
         onStart={handleStart}
         onStop={stop}
+        onCancel={cancel}
         onRetryVoice={handleRetryVoice}
         onNewSession={handleNewSession}
         hasConversation={sessions.length > 0}
