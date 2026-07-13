@@ -1,4 +1,4 @@
-SAME_SPEAKER_MERGE_GAP = 1.2
+SAME_SPEAKER_MERGE_GAP = 0.5
 
 def resolve_overlaps(segments: list) -> list:
     """
@@ -109,4 +109,6 @@ def process_diarization(raw_segments: list) -> list:
 
         cleaned.append({"speaker": seg["speaker"], "start": seg["start"], "end": seg["end"]})
 
-    return cleaned
+    # Short-segment filtering (< 0.3s)
+    filtered = [s for s in cleaned if (s["end"] - s["start"]) >= 0.3]
+    return filtered

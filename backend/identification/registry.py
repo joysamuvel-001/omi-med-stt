@@ -67,22 +67,79 @@ def identify_cluster_embedding(cluster_emb: np.ndarray, fallback_label: str = "U
         return {"name": fallback_label, "score": 0.0, "reason": "no enrolled speakers"}
 
     query_emb = cluster_emb.reshape(1, -1)
+    
+    # Extract background cohort from all enrolled speaker samples
+    cohort = []
+    for emb_list in all_embeddings.values():
+        cohort.extend(emb_list)
+        
     scores = {}
+    raw_scores = {}
+    
     for name, emb_list in all_embeddings.items():
+        # Centroid matching (multi-utterance average)
         centroid = np.mean(emb_list, axis=0)
         norm = np.linalg.norm(centroid)
         if norm > 1e-9:
             centroid = centroid / norm
-        scores[name] = float(cosine_similarity(query_emb, centroid.reshape(1, -1))[0][0])
+            
+        raw_score = float(cosine_similarity(query_emb, centroid.reshape(1, -1))[0][0])
+        raw_scores[name] = raw_score
+        
+        # AS-norm (Adaptive Symmetric Normalization)
+        # Filter cohort to exclude current target speaker's embeddings to prevent self-normalization contamination
+        target_embs = emb_list
+        cohort_filtered = []
+        for c in cohort:
+            is_target_emb = False
+            for t_emb in target_embs:
+                if np.array_equal(c, t_emb):
+                    is_target_emb = True
+                    break
+            if not is_target_emb:
+                cohort_filtered.append(c)
+
+        if len(cohort_filtered) >= 15:  # Require at least 15 background cohort speakers for statistical stability
+            top_n = 50
+            # 1. Cosine similarities of query with cohort
+            q_sims = [float(cosine_similarity(query_emb, c.reshape(1, -1))[0][0]) for c in cohort_filtered]
+            q_sims = sorted(q_sims, reverse=True)
+            n_q = min(top_n, len(q_sims))
+            top_q_sims = q_sims[:n_q]
+            mu_q = np.mean(top_q_sims)
+            sigma_q = np.std(top_q_sims) + 1e-6
+
+            # 2. Cosine similarities of centroid with cohort
+            e_sims = [float(cosine_similarity(centroid.reshape(1, -1), c.reshape(1, -1))[0][0]) for c in cohort_filtered]
+            e_sims = sorted(e_sims, reverse=True)
+            n_e = min(top_n, len(e_sims))
+            top_e_sims = e_sims[:n_e]
+            mu_e = np.mean(top_e_sims)
+            sigma_e = np.std(top_e_sims) + 1e-6
+
+            # 3. Normalized scores
+            norm_q = (raw_score - mu_q) / sigma_q
+            norm_e = (raw_score - mu_e) / sigma_e
+            as_norm_z = (norm_q + norm_e) / 2.0
+            
+            # Map Z-score to a [0, 1] range for threshold compatibility
+            score = 1.0 / (1.0 + np.exp(-1.5 * as_norm_z))
+            print(f"[registry] speaker '{name}' raw_score={raw_score:.3f}, as_norm_z={as_norm_z:.3f}, mapped={score:.3f}")
+        else:
+            # Fallback to raw cosine similarity score for small cohorts to prevent noise amplification
+            score = raw_score
+            
+        scores[name] = score
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     best_name, best_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else -1.0
 
-    print(f"[registry] cluster scores: {scores} | best={best_name} ({best_score:.3f})")
+    print(f"[registry] cluster normalized scores: {scores} | best={best_name} ({best_score:.3f})")
 
     threshold, margin = _get_thresholds()
 
+    # Rejection thresholding (unknown label fallback)
     if best_score < threshold:
         return {"name": fallback_label, "score": round(best_score, 3), "reason": f"below threshold ({best_score:.3f} < {threshold})"}
 

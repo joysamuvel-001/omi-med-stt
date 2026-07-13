@@ -58,11 +58,14 @@ async def remove_speaker(name: str):
 
 
 @app.post("/api/transcribe")
-async def transcribe(audio: UploadFile = File(...)):
+async def transcribe(
+    audio: UploadFile = File(...),
+    ground_truth_diarization: str = Form(None)
+):
     """
     Pipeline:
       1. Convert WebM → 16kHz mono WAV
-      2. Sortformer diarization  →  raw SPEAKER_xx segments
+      2. Sortformer diarization  →  raw SPEAKER_xx segments (or use manual ground truth)
       3. process_diarization     →  merge close same-speaker segments (no renaming)
       4. TitaNet identification  →  replace SPEAKER_xx with real name if enrolled
       5. merge_by_identity       →  merge consecutive same-person turns (with gap guard)
@@ -76,12 +79,19 @@ async def transcribe(audio: UploadFile = File(...)):
 
         convert_to_wav(audio_bytes, wav_path)
 
-        raw_segments    = run_diarization(wav_path)
-        labeled_segments = process_diarization(raw_segments)
+        if ground_truth_diarization:
+            import json
+            raw_segments = json.loads(ground_truth_diarization)
+            labeled_segments = process_diarization(raw_segments)
+            print(f"[server] Using ground-truth diarization with {len(labeled_segments)} segments")
+        else:
+            raw_segments    = run_diarization(wav_path)
+            labeled_segments = process_diarization(raw_segments)
 
         print(f"[server] {len(labeled_segments)} segments after diarization")
 
         labeled_segments = _identify_segments(wav_path, labeled_segments, tmp_dir)
+        labeled_segments = label_smoothing(labeled_segments)
         labeled_segments = merge_by_identity(labeled_segments)
 
         print(f"[server] {len(labeled_segments)} segments after identity merge")
@@ -254,6 +264,36 @@ def merge_by_identity(segments: list, max_gap: float = 1.5) -> list:
             merged.append(dict(seg))
 
     return merged
+
+
+def label_smoothing(segments: list) -> list:
+    """
+    Apply majority-vote / Markov smoothing to speaker labels.
+    If a short segment (e.g. < 1.0s) is sandwiched between two segments
+    of the SAME speaker, and it was NOT identified with high confidence,
+    we smooth its label to match that speaker.
+    """
+    if len(segments) < 3:
+        return segments
+
+    smoothed = [dict(s) for s in segments]
+    for i in range(1, len(smoothed) - 1):
+        prev_seg = smoothed[i - 1]
+        curr_seg = smoothed[i]
+        next_seg = smoothed[i + 1]
+        
+        # If sandwiched between the same speaker
+        if prev_seg["speaker"] == next_seg["speaker"]:
+            duration = curr_seg["end"] - curr_seg["start"]
+            is_short = duration < 1.0
+            is_unidentified = not curr_seg.get("identified", False)
+            if is_short and is_unidentified:
+                curr_seg["speaker"] = prev_seg["speaker"]
+                curr_seg["similarity"] = max(prev_seg.get("similarity", 0.0), next_seg.get("similarity", 0.0))
+                curr_seg["identified"] = prev_seg.get("identified", False)
+                curr_seg["smoothed"] = True
+                
+    return smoothed
 
 
 def _get_available_port(preferred_port: int = 8000) -> int:
