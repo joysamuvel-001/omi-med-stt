@@ -125,7 +125,7 @@ async def health():
         "gpu":         torch.cuda.is_available(),
         "device":      "cuda" if torch.cuda.is_available() else "cpu",
         "speakers":    list_enrolled(),
-        "correction":  bool(os.environ.get("HF_API_TOKEN", "")),
+        "correction":  bool(os.environ.get("RUNPOD_API_KEY", "")),
     }
 
 

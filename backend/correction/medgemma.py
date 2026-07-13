@@ -14,6 +14,7 @@ import os
 import re
 import json
 import time
+import difflib
 from datetime import datetime
 
 import requests
@@ -208,6 +209,111 @@ def _extract_corrected_text(result: dict) -> str:
     return str(output).strip()
 
 
+def align_conversations(original: list, corrected: list) -> list:
+    """
+    Align words of the corrected conversation turns with the original ones
+    to map:
+      1. Speaker identity (resolving generic roles like Doctor/Patient to enrolled speaker names)
+      2. Time stamps (start and end times)
+      3. Similarity/confidence score and original raw diarized label
+    """
+    # 1. Extract word-level info from original turns
+    orig_words_info = []
+    for turn_idx, turn in enumerate(original):
+        words = turn["text"].split()
+        if not words:
+            continue
+        duration = turn["end"] - turn["start"]
+        for w_idx, w in enumerate(words):
+            t_est = turn["start"] + (w_idx + 0.5) * duration / len(words)
+            orig_words_info.append({
+                "word": w.lower().strip(".,!?()\"':;-"),
+                "time": t_est,
+                "speaker": turn["speaker"],
+                "similarity": turn.get("similarity", 1.0),
+                "diarized_as": turn.get("diarized_as"),
+                "turn_idx": turn_idx
+            })
+
+    # 2. Extract word-level info from corrected turns
+    corr_words_info = []
+    for turn_idx, turn in enumerate(corrected):
+        words = turn["text"].split()
+        for w_idx, w in enumerate(words):
+            corr_words_info.append({
+                "word": w.lower().strip(".,!?()\"':;-"),
+                "turn_idx": turn_idx,
+                "speaker_label": turn["speaker"]
+            })
+
+    # 3. Align sequences of words
+    orig_words_list = [w["word"] for w in orig_words_info]
+    corr_words_list = [w["word"] for w in corr_words_info]
+    
+    matcher = difflib.SequenceMatcher(None, orig_words_list, corr_words_list)
+    for a, b, size in matcher.get_matching_blocks():
+        for k in range(size):
+            corr_words_info[b + k]["matched_orig"] = orig_words_info[a + k]
+
+    # 4. Map corrected speaker roles (like Doctor/Patient) to the dominant original speaker
+    speaker_mapping_counts = {}
+    for w in corr_words_info:
+        if "matched_orig" in w:
+            c_spk = w["speaker_label"]
+            o_spk = w["matched_orig"]["speaker"]
+            speaker_mapping_counts.setdefault(c_spk, {}).setdefault(o_spk, 0)
+            speaker_mapping_counts[c_spk][o_spk] += 1
+
+    speaker_map = {}
+    for c_spk, o_counts in speaker_mapping_counts.items():
+        if o_counts:
+            best_o_spk = max(o_counts, key=o_counts.get)
+            speaker_map[c_spk] = best_o_spk
+
+    # 5. Build final aligned conversation turns
+    aligned_turns = []
+    for turn_idx, turn in enumerate(corrected):
+        turn_words = [w for w in corr_words_info if w["turn_idx"] == turn_idx]
+        matched_metadata = [w["matched_orig"] for w in turn_words if "matched_orig" in w]
+        
+        original_label = turn["speaker"]
+        mapped_speaker = speaker_map.get(original_label, original_label)
+        
+        if mapped_speaker in ("Doctor", "Patient", "Unknown") and not matched_metadata:
+            # Fallback to the closest original speaker based on turn index ratio
+            orig_idx = int(turn_idx * len(original) / len(corrected))
+            orig_idx = min(orig_idx, len(original) - 1)
+            mapped_speaker = original[orig_idx]["speaker"]
+
+        if matched_metadata:
+            start_time = min(m["time"] for m in matched_metadata)
+            end_time = max(m["time"] for m in matched_metadata)
+            
+            sims = [m["similarity"] for m in matched_metadata if m.get("similarity") is not None]
+            avg_sim = sum(sims) / len(sims) if sims else None
+            
+            diarized_labels = [m["diarized_as"] for m in matched_metadata if m.get("diarized_as")]
+            diarized_as = max(set(diarized_labels), key=diarized_labels.count) if diarized_labels else None
+        else:
+            orig_idx = int(turn_idx * len(original) / len(corrected))
+            orig_idx = min(orig_idx, len(original) - 1)
+            start_time = original[orig_idx]["start"]
+            end_time = original[orig_idx]["end"]
+            avg_sim = original[orig_idx].get("similarity")
+            diarized_as = original[orig_idx].get("diarized_as")
+            
+        aligned_turns.append({
+            "speaker": mapped_speaker,
+            "text": turn["text"],
+            "start": round(start_time, 2),
+            "end": round(end_time, 2),
+            "similarity": round(avg_sim, 3) if avg_sim is not None else None,
+            "diarized_as": diarized_as
+        })
+        
+    return aligned_turns
+
+
 def _parse_corrected_output(raw: str, original: list) -> list:
     """
     Parse MedGemma output back into per-speaker turns.
@@ -216,7 +322,7 @@ def _parse_corrected_output(raw: str, original: list) -> list:
       2. Plain JSON list of {"speaker","text"}
       3. JSON object wrapping the list under a common key
       4. First {...}/[...] JSON block found anywhere in the text (model added prose)
-      5. "Speaker: text" lines
+      5. "Speaker: text" lines (dynamic regex based on known speakers)
       6. Fallback: original turns unchanged
     """
     cleaned = raw.strip()
@@ -262,16 +368,23 @@ def _parse_corrected_output(raw: str, original: list) -> list:
                     _log("PARSE", f"Parsed as embedded JSON object, unwrapped key '{key}'")
                     return inner
 
-    # 5. "Speaker: text" lines
+    # 5. "Speaker: text" lines (dynamic regex matching original speakers or generic roles)
+    known_speakers = set(t["speaker"] for t in original if t.get("speaker"))
+    known_speakers.update(["Doctor", "Patient", "Unknown"])
+    escaped_speakers = [re.escape(s) for s in known_speakers]
+    escaped_speakers.append(r"Speaker[_\s]\d+")
+    speaker_pattern = "|".join(escaped_speakers)
+    pattern = rf"^({speaker_pattern})(?:\s*\(.*?\))?\s*:\s*(.+)$"
+
     lines      = [l.strip() for l in cleaned.splitlines() if l.strip()]
     line_turns = []
     for line in lines:
-        match = re.match(r"^(Doctor|Patient|Speaker[_\s]\d+)\s*:\s*(.+)$", line, re.IGNORECASE)
+        match = re.match(pattern, line, re.IGNORECASE)
         if match:
             line_turns.append({"speaker": match.group(1), "text": match.group(2).strip()})
 
-    if len(line_turns) == len(original):
-        _log("PARSE", "Parsed as Speaker: text lines")
+    if line_turns:
+        _log("PARSE", f"Parsed as Speaker: text lines ({len(line_turns)} turns)")
         return line_turns
 
     # 6. Give up — log the raw output so you can inspect it and extend this function
@@ -300,19 +413,11 @@ def correct_transcript(conversation: list) -> dict:
         _log("MEDGEMMA", f"Raw output length: {len(raw)} chars")
         corrected = _parse_corrected_output(raw, conversation)
 
-    # Re-merge timing/confidence metadata that MedGemma doesn't return,
-    # so the frontend still gets start/end/similarity/diarized_as.
-    if len(corrected) == len(conversation):
-        merged = []
-        for original, fixed in zip(conversation, corrected):
-            merged.append({
-                **original,          # keeps start, end, similarity, diarized_as
-                "speaker": fixed.get("speaker", original["speaker"]),
-                "text":    fixed.get("text", original["text"]),
-            })
-        corrected = merged
+    # Align corrected conversation back to original to preserve timestamps and map roles to names
+    if corrected:
+        corrected = align_conversations(conversation, corrected)
     else:
-        _log("MEDGEMMA", f"WARNING: turn count mismatch ({len(corrected)} vs {len(conversation)}) — metadata not merged")
+        corrected = conversation
 
     _log_separator()
     _log("MEDGEMMA", "Correction complete")
