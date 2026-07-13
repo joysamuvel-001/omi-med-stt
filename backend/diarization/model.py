@@ -52,6 +52,23 @@ try:
 except Exception as e:
     logger.warning("Could not patch speechbrain LazyModule: %s", e)
 
+# ── huggingface_hub use_auth_token patch (resolves newer hf_hub compatibility) ──
+try:
+    import huggingface_hub
+    _orig_hf_hub_download = huggingface_hub.hf_hub_download
+
+    def _patched_hf_hub_download(*args, **kwargs):
+        if "use_auth_token" in kwargs:
+            kwargs["token"] = kwargs.pop("use_auth_token")
+        return _orig_hf_hub_download(*args, **kwargs)
+
+    huggingface_hub.hf_hub_download = _patched_hf_hub_download
+
+    import huggingface_hub.file_download
+    huggingface_hub.file_download.hf_hub_download = _patched_hf_hub_download
+except Exception as e:
+    logger.warning("Could not patch huggingface_hub hf_hub_download: %s", e)
+
 from pyannote.audio import Pipeline
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -84,8 +101,8 @@ def _get_pipeline():
     torch.load = _patched_load
     try:
         _pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=HF_TOKEN   # not token= — that's the 4.0 API
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=HF_TOKEN
         )
     finally:
         torch.load = _orig_load
@@ -93,14 +110,18 @@ def _get_pipeline():
     _pipeline.to(torch.device(DEVICE))
 
     # ── Tuning: reduce false speaker-splits on consultation audio ──────────
-    # _pipeline.instantiate({
-    #     "segmentation": {
-    #         "min_duration_off": 0.6,   # merge pauses shorter than this instead of splitting
-    #     },
-    #     "clustering": {
-    #         "threshold": 0.75,         # stricter than default 0.7 — fewer spurious new speakers
-    #     },
-    # })
+    clustering_threshold = float(os.environ.get("PYANNOTE_CLUSTERING_THRESHOLD", "0.65"))
+    min_duration_off = float(os.environ.get("PYANNOTE_MIN_DURATION_OFF", "0.6"))
+
+    print(f"[diarization] Instantiating pyannote with clustering_threshold={clustering_threshold}, min_duration_off={min_duration_off}")
+    _pipeline.instantiate({
+        "segmentation": {
+            "min_duration_off": min_duration_off,
+        },
+        "clustering": {
+            "threshold": clustering_threshold,
+        },
+    })
     # ─────────────────────────────────────────────────────────────────────
 
     print(f"[diarization] pyannote ready on {DEVICE}.")

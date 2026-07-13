@@ -84,11 +84,11 @@ def main():
 
     print()
     if mislabel_suspects:
-        print(f"⚠️  Possible mislabeled enrollment files: {mislabel_suspects}")
+        print(f"[WARNING] Possible mislabeled enrollment files: {mislabel_suspects}")
         print("These files are closer to a DIFFERENT speaker's centroid than to their own label.")
         print("Recommend: delete these specific files and re-enroll that sample.")
     else:
-        print("✅ No mislabeling detected — every sample is closest to its own speaker's centroid.")
+        print("[SUCCESS] No mislabeling detected — every sample is closest to its own speaker's centroid.")
         print("If booja/snegha are still swapping during real transcription, it's likely")
         print("condition/channel drift between enrollment and test recordings, not mislabeling.")
         print("Try re-enrolling both fresh, immediately before your next test, same mic/setup.")

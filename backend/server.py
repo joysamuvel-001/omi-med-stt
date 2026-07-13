@@ -18,6 +18,7 @@ from identification.titanet import get_embedding_windowed
 from transcription.asr import transcribe_segments
 from identification.registry import (
     enroll_speaker, identify_speaker,
+    identify_cluster_embedding,
     list_enrolled, delete_speaker
 )
 
@@ -81,7 +82,6 @@ async def transcribe(audio: UploadFile = File(...)):
         print(f"[server] {len(labeled_segments)} segments after diarization")
 
         labeled_segments = _identify_segments(wav_path, labeled_segments, tmp_dir)
-        labeled_segments = _smooth_short_unknowns(labeled_segments)
         labeled_segments = merge_by_identity(labeled_segments)
 
         print(f"[server] {len(labeled_segments)} segments after identity merge")
@@ -133,117 +133,89 @@ async def health():
 
 def _identify_segments(wav_path: str, segments: list, tmp_dir: str) -> list:
     """
-    Slice each segment, extract TitaNet embedding, match against enrolled speakers.
-
-    Critical change: pass seg["speaker"] (which is "SPEAKER_00" etc.) as
-    fallback_label so unenrolled speakers keep their unique Sortformer ID
-    rather than all collapsing to "Unknown".
-
-    Minimum segment length: 1.0s (was 1.5s — allows short turns to be identified)
+    Perform cluster-based speaker identification.
+    
+    1. Group all segments by their diarized cluster label (e.g. "SPEAKER_00").
+    2. Extract TitaNet embeddings for segments in each cluster that are >= 1.2s.
+       If a cluster has no segments >= 1.2s, use all available segments of that cluster.
+    3. Average the embeddings to compute a single high-quality centroid embedding for the cluster.
+    4. Match this cluster centroid against enrolled speakers.
+    5. Propagate the identified speaker name (or raw label if unidentified) to all segments of that cluster.
     """
+    if not segments:
+        return []
+
+    import numpy as np
+    from identification.titanet import get_embedding_windowed as get_embedding
+
     audio, sr = sf.read(wav_path)
 
+    # Step 1: Group segments by pyannote speaker label (diarized_as)
+    clusters = {}
     for seg in segments:
-        start    = seg.get("start", 0.0)
-        end      = seg.get("end",   0.0)
-        duration = end - start
-        diarized_label = seg["speaker"]  # e.g. "SPEAKER_00"
-
+        diarized_label = seg["speaker"]  # originally "SPEAKER_00", "SPEAKER_01", etc.
         seg["diarized_as"] = diarized_label
+        clusters.setdefault(diarized_label, []).append(seg)
 
-        if duration < 1.2:
-            # Too short — keep Sortformer label, mark as not identified
-            seg["similarity"] = 0.0
-            seg["identified"] = False
+    # Step 2 & 3: For each cluster, extract embeddings and calculate the centroid
+    cluster_identities = {} # maps diarized_label -> {"name": str, "score": float, "identified": bool}
+
+    for diarized_label, cluster_segs in clusters.items():
+        # Select segments for extracting speaker signature (prefer >= 1.2 seconds)
+        signature_segs = [s for s in cluster_segs if (s["end"] - s["start"]) >= 1.2]
+        if not signature_segs:
+            # Fallback to all segments if they are all short
+            signature_segs = cluster_segs
+
+        embeddings = []
+        for s in signature_segs:
+            start_s = int(s["start"] * sr)
+            end_s   = int(s["end"]   * sr)
+            if end_s - start_s < int(0.1 * sr):  # Too short to slice safely, skip
+                continue
+            seg_wav = os.path.join(tmp_dir, f"sig_{uuid.uuid4()}.wav")
+            try:
+                sf.write(seg_wav, audio[start_s:end_s], sr)
+                emb = get_embedding(seg_wav)
+                embeddings.append(emb)
+            except Exception as e:
+                print(f"[server] Error getting signature embedding: {e}")
+            finally:
+                if os.path.exists(seg_wav):
+                    os.remove(seg_wav)
+
+        if not embeddings:
+            # No embeddings could be extracted for this cluster
+            cluster_identities[diarized_label] = {
+                "name": diarized_label,
+                "score": 0.0,
+                "identified": False
+            }
             continue
 
-        # Slice audio
-        start_s = int(start * sr)
-        end_s   = int(end   * sr)
-        seg_wav = f"{tmp_dir}/seg_{uuid.uuid4()}.wav"
-        sf.write(seg_wav, audio[start_s:end_s], sr)
+        # Compute centroid embedding
+        centroid = np.mean(embeddings, axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm > 1e-9:
+            centroid = centroid / norm
 
-        # TitaNet match — pass Sortformer ID as fallback
-        result = identify_speaker(seg_wav, fallback_label=diarized_label)
+        # Step 4: Identify cluster centroid
+        result = identify_cluster_embedding(centroid, fallback_label=diarized_label)
+        identified = result["name"] not in (diarized_label, "Unknown")
+        cluster_identities[diarized_label] = {
+            "name": result["name"],
+            "score": result.get("score", 0.0),
+            "identified": identified
+        }
+        print(f"[server] Cluster '{diarized_label}' identified as '{result['name']}' (score: {result.get('score', 0.0):.3f}, identified: {identified})")
 
-        seg["speaker"]    = result["name"]        # real name OR "SPEAKER_xx"
-        seg["similarity"] = result.get("score", 0.0)
-        seg["identified"] = result["name"] not in (diarized_label, "Unknown")
-
-    return segments
-
-def _smooth_short_unknowns(segments: list, max_short_duration: float = 2.5, max_gap: float = 2.0) -> list:
-    """
-    Short segments give unreliable TitaNet embeddings on their own.
-    If a short/unidentified segment is sandwiched between two confidently
-    identified turns from the SAME speaker, with small gaps, assume it's
-    that speaker too — neighbor context beats a shaky standalone embedding.
-
-    Guard: only smooth if pyannote's own diarization (diarized_as, e.g.
-    "SPEAKER_00") agrees the segment belongs to the same underlying voice
-    cluster as at least one neighbor. Without this guard, a genuinely
-    different speaker turn that happens to be short gets silently relabeled
-    just because it sits between two turns from someone else — overriding
-    pyannote's own different-voice detection instead of just filling in
-    an uncertain gap.
-    """
-    if len(segments) < 2:
-        return segments
-
-    # ── Edge case: first segment ──
-    first = segments[0]
-    duration = first["end"] - first["start"]
-    if not first.get("identified") and duration <= max_short_duration:
-        nxt = segments[1]
-        gap = nxt["start"] - first["end"]
-        diarized_matches_next = first.get("diarized_as") == nxt.get("diarized_as")
-        if diarized_matches_next and nxt.get("identified") and gap <= max_gap:
-            print(f"[server] Smoothing first segment '{first['speaker']}' ({duration:.1f}s) -> '{nxt['speaker']}' via next-only")
-            first["speaker"]    = nxt["speaker"]
-            first["identified"] = True
-            first["smoothed"]   = True
-
-    # ── Middle segments ──
-    for i in range(1, len(segments) - 1):
-        seg = segments[i]
-        duration = seg["end"] - seg["start"]
-        if seg.get("identified") or duration > max_short_duration:
-            continue
-
-        prev_seg, next_seg = segments[i - 1], segments[i + 1]
-
-        # Only smooth if pyannote itself thought this was the SAME
-        # underlying speaker cluster as at least one neighbor — don't override
-        # a genuine different-voice detection just because it's short.
-        diarized_matches_neighbor = (
-            seg.get("diarized_as") == prev_seg.get("diarized_as")
-            or seg.get("diarized_as") == next_seg.get("diarized_as")
-        )
-        if not diarized_matches_neighbor:
-            continue
-
-        if (prev_seg["speaker"] == next_seg["speaker"]
-                and prev_seg.get("identified") and next_seg.get("identified")):
-            gap_before = seg["start"] - prev_seg["end"]
-            gap_after  = next_seg["start"] - seg["end"]
-            if gap_before <= max_gap and gap_after <= max_gap:
-                print(f"[server] Smoothing '{seg['speaker']}' ({duration:.1f}s) -> '{prev_seg['speaker']}' via neighbors")
-                seg["speaker"]    = prev_seg["speaker"]
-                seg["identified"] = True
-                seg["smoothed"]   = True
-
-    # ── Edge case: last segment ──
-    last = segments[-1]
-    duration = last["end"] - last["start"]
-    if not last.get("identified") and duration <= max_short_duration:
-        prev = segments[-2]
-        gap = last["start"] - prev["end"]
-        diarized_matches_prev = last.get("diarized_as") == prev.get("diarized_as")
-        if diarized_matches_prev and prev.get("identified") and gap <= max_gap:
-            print(f"[server] Smoothing last segment '{last['speaker']}' ({duration:.1f}s) -> '{prev['speaker']}' via prev-only")
-            last["speaker"]    = prev["speaker"]
-            last["identified"] = True
-            last["smoothed"]   = True
+    # Step 5: Propagate cluster identities back to segments
+    for seg in segments:
+        diarized_label = seg["diarized_as"]
+        identity = cluster_identities[diarized_label]
+        seg["speaker"] = identity["name"]
+        seg["similarity"] = identity["score"]
+        seg["identified"] = identity["identified"]
 
     return segments
 

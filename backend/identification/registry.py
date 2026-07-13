@@ -14,7 +14,11 @@ from sklearn.metrics.pairwise import cosine_similarity
 from identification.titanet import get_embedding_windowed as get_embedding
 
 ENROLLED_DIR = os.path.join(os.path.dirname(__file__), "..", "enrolled_speakers")
-THRESHOLD    = 0.55
+
+def _get_thresholds():
+    threshold = float(os.environ.get("TITANET_THRESHOLD", "0.55"))
+    margin = float(os.environ.get("TITANET_MARGIN", "0.05"))
+    return threshold, margin
 
 
 def _safe_name(name: str) -> str:
@@ -57,16 +61,12 @@ def enroll_speaker(name: str, wav_path: str) -> dict:
     }
 
 
-def identify_speaker(wav_path: str, fallback_label: str = "Unknown") -> dict:
+def identify_cluster_embedding(cluster_emb: np.ndarray, fallback_label: str = "Unknown") -> dict:
     all_embeddings = _load_all_enrolled()
     if not all_embeddings:
         return {"name": fallback_label, "score": 0.0, "reason": "no enrolled speakers"}
 
-    try:
-        query_emb = get_embedding(wav_path).reshape(1, -1)
-    except Exception as e:
-        return {"name": fallback_label, "score": 0.0, "reason": str(e)}
-
+    query_emb = cluster_emb.reshape(1, -1)
     scores = {}
     for name, emb_list in all_embeddings.items():
         centroid = np.mean(emb_list, axis=0)
@@ -79,16 +79,26 @@ def identify_speaker(wav_path: str, fallback_label: str = "Unknown") -> dict:
     best_name, best_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else -1.0
 
-    print(f"[registry] scores: {scores} | best={best_name} ({best_score:.3f})")
+    print(f"[registry] cluster scores: {scores} | best={best_name} ({best_score:.3f})")
 
-    if best_score < THRESHOLD:
-        return {"name": fallback_label, "score": round(best_score, 3), "reason": "below threshold"}
+    threshold, margin = _get_thresholds()
 
-    # Margin check — if top-2 speakers are too close, it's ambiguous, not a confident match
-    if best_score - second_score < 0.08:
-        return {"name": fallback_label, "score": round(best_score, 3), "reason": "ambiguous — too close to second best"}
+    if best_score < threshold:
+        return {"name": fallback_label, "score": round(best_score, 3), "reason": f"below threshold ({best_score:.3f} < {threshold})"}
+
+    if best_score - second_score < margin:
+        return {"name": fallback_label, "score": round(best_score, 3), "reason": f"ambiguous — top 2 too close ({best_score:.3f} vs {second_score:.3f}, diff < {margin})"}
 
     return {"name": best_name, "score": round(best_score, 3)}
+
+
+def identify_speaker(wav_path: str, fallback_label: str = "Unknown") -> dict:
+    try:
+        query_emb = get_embedding(wav_path)
+    except Exception as e:
+        return {"name": fallback_label, "score": 0.0, "reason": str(e)}
+
+    return identify_cluster_embedding(query_emb, fallback_label=fallback_label)
 
 def list_enrolled() -> list:
     """Return unique speaker names (deduplicated across multiple sample files)."""
